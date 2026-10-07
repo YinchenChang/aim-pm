@@ -1,0 +1,26 @@
+{
+  "start_date": "2026-10-15",
+  "charter_file_id": "12K5eqBNP6OMkM_c35ko4hqO8vMDbPuBi",
+  "funnel_file_id": "1FcrhXNs53jWu_8fFFlezc86uZvd3EqXI",
+  "ledger_file_id": "1uKfYqf1Dr3uyMTI84Sgq0Pw2gU4Ldlmm",
+  "folders": {
+    "work": "1CEprzXwFF4FA0HRHDe9prm2cIYRLB12z",
+    "inbox_CL": "10V5x-hWnPLoP6JRplx5W7zaBwvWB6ojS",
+    "inbox_GK": "1ZbILrSDyO71BiAS8yV_Ccx9W_WUKDm-S",
+    "query": "1OPi79EP1MtU8dfSGJhzA8et8Grliaf8w",
+    "old": "19cIQBiXA3y1n5NNCokZVJXUtP_cnY03I",
+    "pm": "1NBBywRhIM7zx93nijmCBAuzqARDnSsf4",
+    "archive": "1ScRPL8RzwX4Yl3wyKKu-tzTt66UWiHDV",
+    "archive_work": "1UqEAEdfoIy-PHmJu62OxEJJGmBdBJUAy"
+  },
+  "benchmark_a": {
+    "VTI": 0.7,
+    "IBIT": 0.3,
+    "rebalance": "Q"
+  },
+  "benchmark_b": "^SP500TR",
+  "load_files": [
+    "AIM_CHARTER.md",
+    "AIM_FUNNEL.md"
+  ]
+}
