@@ -1,0 +1,31 @@
+# AIM 機械層（CHARTER C1.2 §6）：月末基準與 LEDGER 數字表。腳本不做判斷。
+# 雲端 Claude 容器連不到 Yahoo，故價格計算放 GitHub Actions。
+name: ledger
+on:
+  schedule:
+    - cron: "17 2 1 * *"        # 每月 1 日 10:17 台北：補上月月末
+  push:
+    paths: ["data/**"]           # 使用者或 PM 回填成交後即重算
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install yfinance pandas requests
+      - name: benchmark + ledger + scorecard numbers
+        run: |
+          python aim.py benchmark
+          python aim.py ledger
+          cp out/LEDGER.md pm/LEDGER.md      # 正本＝pm/LEDGER.md；aim.py 保留標頭／預設袋／部位節
+          python aim.py scorecard || true    # 起算後首個完整月前可能無資料
+      - name: commit
+        run: |
+          git config user.name "aim-actions"; git config user.email "actions@users.noreply.github.com"
+          git add out pm
+          git diff --cached --quiet || git commit -m "MECH: ledger/benchmark $(date -u +%F)"
+          git push
