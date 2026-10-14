@@ -434,42 +434,86 @@ def cmd_sync(a):
         print("⚠ aim_config.json 缺 folders.query，無法寫 MECH 心跳")
 
 # ---------- 價格 ----------
-def prices(symbols, start, end):
-    """月末收盤。取不到者回 NaN；marks.csv 之手填值優先。"""
+def daily_prices(symbols, start, end, adjusted):
+    """日收盤。adjusted=True＝含息調整（基準總報酬用）；False＝原始收盤（帳上部位用，股利另計）。
+    取不到者整欄 NaN；data/marks.csv 之手填值優先（覆寫該日）。"""
     import pandas as pd, yfinance as yf
-    idx = pd.DatetimeIndex(month_ends(start, end))
-    px = pd.DataFrame(index=idx)
+    end_x = (pd.Timestamp(end) + pd.Timedelta(days=1)).date().isoformat()  # yfinance 之 end 不含當日
+    cols = {}
     for s in symbols:
         try:
-            h = yf.download(s, start=start, end=end, progress=False, auto_adjust=True)["Close"]
-            h = h.squeeze() if hasattr(h, "squeeze") else h
-            px[s] = h.resample("ME").last().reindex(idx)
-        except Exception as e:  # noqa
-            px[s] = float("nan")
+            h = yf.download(s, start=start, end=end_x, progress=False, auto_adjust=adjusted)["Close"]
+            cols[s] = h.squeeze() if hasattr(h, "squeeze") else h
+        except Exception:  # noqa
+            cols[s] = pd.Series(dtype=float)
+    px = pd.DataFrame(cols)
     for r in read_csv(DATA / "marks.csv"):
-        d = pd.Timestamp(r["date"]).to_period("M").to_timestamp("M")
-        px.loc[d, r["symbol"]] = float(r["price"])
-    return px
+        if r["symbol"] in px.columns or r["symbol"] in symbols:
+            px.loc[pd.Timestamp(r["date"]), r["symbol"]] = float(r["price"])
+    return px.sort_index().ffill()
+
+def dividends(symbols, start, end):
+    """每股現金股利，依除息日：{symbol: [(Timestamp, 每股金額)]}。取不到者空。"""
+    import pandas as pd, yfinance as yf
+    out = {}
+    for s in symbols:
+        try:
+            d = yf.Ticker(s).dividends
+            d.index = d.index.tz_localize(None) if d.index.tz is not None else d.index
+            out[s] = [(t, float(v)) for t, v in d.items() if pd.Timestamp(start) <= t <= pd.Timestamp(end)]
+        except Exception:  # noqa
+            out[s] = []
+    return out
+
+def report_days(idx, start):
+    """報表日＝起算日（≥ start 之首個交易日）＋每月最後交易日。"""
+    import pandas as pd
+    idx = idx[idx >= pd.Timestamp(start)]
+    if len(idx) == 0:
+        return []
+    keep = {idx[0]} | set(pd.Series(idx, index=idx).groupby(idx.to_period("M")).max())
+    return sorted(keep)
+
+def quarter_cut_days(idx):
+    """季切再平衡日＝每年 01-15／04-15／07-15／10-15 當日或其後首個交易日（CHARTER §2-4、§5）。"""
+    import pandas as pd
+    cuts = set()
+    for y in sorted({d.year for d in idx}):
+        for m in (1, 4, 7, 10):
+            after = idx[idx >= pd.Timestamp(y, m, 15)]
+            if len(after):
+                cuts.add(after[0])
+    return cuts
+
+def _prestart_exit(start, what):
+    print(f"起算日 {start} 前或尚無收盤資料：{what} 無可計算，不改檔。")
+    sys.exit(0)
 
 # ---------- benchmark ----------
 def cmd_benchmark(a):
-    import pandas as pd
+    """(a) 70/30 含息總報酬，於季切日收盤再平衡（與預設袋同日）；(b) ^SP500TR。輸出報表日列。"""
     c = cfg(); start, end = c["start_date"], date.today().isoformat()
+    if date.fromisoformat(start) > date.today():
+        _prestart_exit(start, "benchmark")
     ba = c["benchmark_a"]; wts = {k: v for k, v in ba.items() if k != "rebalance"}
-    px = prices(list(wts) + [c["benchmark_b"]], start, end)
-    ret = px.pct_change().fillna(0.0)
-    # (a) 固定權重，季再平衡：每季末重設權重，季內權重隨價格漂移
-    nav_a, w = 1.0, dict(wts); out = []
-    for i, (d, r) in enumerate(ret.iterrows()):
-        if i == 0:
-            out.append((d.date(), 1.0, 1.0)); continue
-        g = sum(w[s] * (1 + r[s]) for s in w)
-        nav_a *= g
-        w = {s: w[s] * (1 + r[s]) / g for s in w}
-        if ba.get("rebalance") == "Q" and d.month in (3, 6, 9, 12):
-            w = dict(wts)
-        nav_b = (1 + ret[c["benchmark_b"]].iloc[:i + 1]).prod()
-        out.append((d.date(), nav_a, float(nav_b)))
+    px = daily_prices(list(wts) + [c["benchmark_b"]], start, end, adjusted=True).dropna(how="any")
+    px = px[px.index >= __import__("pandas").Timestamp(start)]
+    if px.empty:
+        _prestart_exit(start, "benchmark")
+    cuts = quarter_cut_days(px.index) if ba.get("rebalance") == "Q" else set()
+    keep = set(report_days(px.index, start))
+    nav_a, w, out = 1.0, dict(wts), []
+    b0 = px[c["benchmark_b"]].iloc[0]
+    for i, d in enumerate(px.index):
+        if i > 0:
+            r = px.iloc[i] / px.iloc[i - 1] - 1
+            g = sum(w[s] * (1 + r[s]) for s in w)
+            nav_a *= g
+            w = {s: w[s] * (1 + r[s]) / g for s in w}
+        if d in cuts:
+            w = dict(wts)  # 收盤再平衡；起算日即建倉於目標權重
+        if d in keep:
+            out.append((d.date(), nav_a, float(px[c["benchmark_b"]].iloc[i] / b0)))
     OUT.mkdir(exist_ok=True)
     with (OUT / "benchmarks.csv").open("w", encoding="utf-8", newline="") as f:
         wr = csv.writer(f); wr.writerow(["date", "nav_a", "nav_b"]); wr.writerows(out)
@@ -488,11 +532,7 @@ def twr_and_log(navs, flows):
     return chain - 1, logs
 
 def _ledger_local_path():
-    """LEDGER 本地正本路徑（CHARTER §4：AIM/pm/LEDGER.md）。cmd_ledger 讀它取得「標頭」
-    「預設袋」「### 部位」「### 執行回填」等由 PM／使用者維護之欄位；只重算並取代「## 數字表」
-    主表本身（CHARTER §3.1：覆寫數字表節時不得動前兩節；### 部位／執行回填為使用者依實際成交
-    回填之資料，CHARTER §9，aim.py 同樣不得覆寫，原樣保留）。"""
-    return canon_path("ledger", "LEDGER.md")
+    return ROOT / "pm" / "LEDGER.md"
 
 def _split_ledger_sections(text):
     """把本地 LEDGER 正本切成三段：(a) 開頭至「## 數字表」之前（標頭＋預設袋，原樣保留）、
@@ -501,86 +541,104 @@ def _split_ledger_sections(text):
     回傳 (prefix, suffix)；找不到任一標記即報錯——寧可停下也不要用錯誤假設覆寫使用者資料。"""
     i_num = text.find("## 數字表")
     if i_num == -1:
-        sys.exit("本地 pm/LEDGER.md 找不到「## 數字表」標記，結構不符預期，先跑 `aim.py sync --role PM` 拉最新正本")
+        sys.exit("pm/LEDGER.md 找不到「## 數字表」標記，結構不符預期")
     i_pos = text.find("### 部位", i_num)
     if i_pos == -1:
-        sys.exit("本地 pm/LEDGER.md 找不到「### 部位」標記，結構不符預期，先跑 `aim.py sync --role PM` 拉最新正本")
+        sys.exit("pm/LEDGER.md 找不到「### 部位」標記，結構不符預期")
     return text[:i_num], text[i_pos:]
 
-def cmd_ledger(a):
+def _mult(s):
+    return 100 if re.search(r"\d{6}[CP]\d{8}$", s) else 1  # OCC 選擇權代碼
+
+def ledger_series(c, end):
+    """逐日帳：現金＝資本流 − 交易 ＋ 股利（除息日依前一日持股入帳）＋ data/income.csv（利息等非股利收入）。
+    部位以原始收盤計值（股利已入現金，不得再用含息價，否則重複計）。回傳 [(Timestamp, cash, basket, active, nav, flow)]。"""
     import pandas as pd
-    c = cfg(); start, end = c["start_date"], date.today().isoformat()
-    local = _ledger_local_path()
-    if not local.exists():
-        sys.exit(f"缺本地 {local.relative_to(ROOT).as_posix()}，先跑 `aim.py sync --role PM` 拉正本")
-    prefix, suffix = _split_ledger_sections(local.read_text(encoding="utf-8"))
-    bm = read_csv(OUT / "benchmarks.csv")
-    if not bm:
-        sys.exit("缺 out/benchmarks.csv，先跑 `aim.py benchmark`")
-    bm_by_date = {r["date"]: r for r in bm}
-
-    ba = c["benchmark_a"]
-    basket_syms = {k for k in ba if k != "rebalance"}  # 假設：trades.csv 內屬於此集合者一律計為預設袋部位，
-                                                        # 其餘計為主動部位（見本次修補說明的已知限制）
+    start = c["start_date"]
+    basket_syms = {k for k in c["benchmark_a"] if k != "rebalance"}
     flows = read_csv(DATA / "cashflows.csv"); trades = read_csv(DATA / "trades.csv")
+    income = read_csv(DATA / "income.csv") if (DATA / "income.csv").exists() else []
+    if not flows:
+        return []
     syms = sorted({t["symbol"] for t in trades})
-    px = prices(syms, start, end)
-
-    rows, navs, fl = [], [], []
-    for d in px.index:
-        dd = d.date()
-        cash = sum(float(f["amount"]) for f in flows if date.fromisoformat(f["date"]) <= dd)
+    px = daily_prices(syms, start, end, adjusted=False) if syms else pd.DataFrame()
+    idx = px.index if len(px.index) else pd.DatetimeIndex([])
+    first = pd.Timestamp(min(f["date"] for f in flows))
+    idx = idx[idx >= first]
+    if len(idx) == 0:
+        return []
+    divs = dividends([s for s in syms if _mult(s) == 1], start, end)
+    rows, prev_d = [], None
+    for d in idx:
+        cash = sum(float(f["amount"]) for f in flows if pd.Timestamp(f["date"]) <= d)
+        flow = sum(float(f["amount"]) for f in flows
+                   if pd.Timestamp(f["date"]) <= d and (prev_d is None or pd.Timestamp(f["date"]) > prev_d))
         pos = {}
         for t in trades:
-            if date.fromisoformat(t["date"]) <= dd:
-                mult = 100 if re.search(r"\d{6}[CP]\d{8}$", t["symbol"]) else 1  # OCC 選擇權代碼
+            if pd.Timestamp(t["date"]) <= d:
                 q, p = float(t["qty"]), float(t["price"])
                 pos[t["symbol"]] = pos.get(t["symbol"], 0) + q
-                cash -= q * p * mult
-        basket_mv = active_mv = 0.0
+                cash -= q * p * _mult(t["symbol"])
+        for s, evts in divs.items():  # 除息日前一日收盤時之持股領息
+            for ex, amt in evts:
+                if ex <= d:
+                    held = sum(float(t["qty"]) for t in trades
+                               if t["symbol"] == s and pd.Timestamp(t["date"]) < ex)
+                    cash += held * amt
+        cash += sum(float(r["amount"]) for r in income if pd.Timestamp(r["date"]) <= d)
+        basket = active = 0.0
         for s, q in pos.items():
-            mult = 100 if re.search(r"\d{6}[CP]\d{8}$", s) else 1
             p = px.loc[d, s] if s in px.columns else float("nan")
-            if q and math.isnan(p):
-                print(f"⚠ {dd} {s} 無價格，請填 data/marks.csv"); p = 0.0
-            mv = q * p * mult
+            if q and (p != p):
+                print(f"⚠ {d.date()} {s} 無價格，請填 data/marks.csv"); p = 0.0
+            mv = q * p * _mult(s)
             if s in basket_syms:
-                basket_mv += mv
+                basket += mv
             else:
-                active_mv += mv
-        nav = cash + basket_mv + active_mv
-        fin = sum(float(f["amount"]) for f in flows if date.fromisoformat(f["date"]) <= dd
-                  and (not navs or date.fromisoformat(f["date"]) > rows[-1][0]))
-        rows.append((dd, round(cash, 2), round(basket_mv, 2), round(active_mv, 2), round(nav, 2)))
-        navs.append(nav); fl.append(fin if navs[:-1] else 0.0)
+                active += mv
+        rows.append((d, cash, basket, active, cash + basket + active, flow if prev_d is not None else 0.0))
+        prev_d = d
+    return rows
 
+def cmd_ledger(a):
+    c = cfg(); start, end = c["start_date"], date.today().isoformat()
+    if date.fromisoformat(start) > date.today():
+        _prestart_exit(start, "ledger")
+    local = _ledger_local_path()
+    if not local.exists():
+        sys.exit("缺 pm/LEDGER.md")
+    prefix, suffix = _split_ledger_sections(local.read_text(encoding="utf-8"))
+    bm_by_date = {r["date"]: r for r in read_csv(OUT / "benchmarks.csv")}
+    daily = ledger_series(c, end)
+    if not daily:
+        _prestart_exit(start, "ledger（data/cashflows.csv 或成交尚無資料）")
+    navs = [r[4] for r in daily]; fl = [r[5] for r in daily]
     twr, lg = twr_and_log(navs, fl)
-    mdd = max(((max(navs[:i + 1]) - navs[i]) / max(navs[:i + 1]) if max(navs[:i + 1]) > 0 else 0.0)
-              for i in range(len(navs))) if navs else 0.0
-
-    lines = ["## 數字表（`aim.py` 覆寫區；起算前為空）", "",
-             f"**起算至今：** 時間加權對數成長率 {twr:.2%}　最大回撤 {mdd:.1%}"
-             f"（本次由 aim.py 於 {date.today()} 重算）", "",
-             "| 月末 | 池NAV | 預設袋市值 | 主動部位市值 | 結算現金 | 結算現金/NAV | (a) 月末值 | (b) 月末值 | 當月對數成長 |",
+    mdd = max((max(navs[:i + 1]) - navs[i]) / max(navs[:i + 1]) if max(navs[:i + 1]) > 0 else 0.0
+              for i in range(len(navs)))
+    keep = set(report_days(__import__("pandas").DatetimeIndex([r[0] for r in daily]), start))
+    lines = ["## 數字表（`aim.py` 覆寫區）", "",
+             f"**起算至今：** 時間加權報酬 {twr:.2%}　對數成長率 {lg:+.4f}　最大回撤 {mdd:.1%}"
+             f"（日資料；本次由 aim.py 於 {date.today()} 重算）", "",
+             "| 報表日 | 池NAV | 預設袋市值 | 主動部位市值 | 結算現金 | 結算現金/NAV | (a) 值 | (b) 值 | 期間對數成長 |",
              "|---|---|---|---|---|---|---|---|---|"]
-    prev_nav = None
-    for i, (dd, cash, basket_mv, active_mv, nav) in enumerate(rows):
-        r = bm_by_date.get(dd.isoformat())
+    last_i = None
+    for i, (d, cash, basket, active, nav, _) in enumerate(daily):
+        if d not in keep:
+            continue
+        r = bm_by_date.get(d.date().isoformat())
         a_val = f"{float(r['nav_a']):.4f}" if r else "—"
         b_val = f"{float(r['nav_b']):.4f}" if r else "—"
-        cash_ratio = f"{cash / nav:.1%}" if nav else "—"
-        if prev_nav and prev_nav > 0 and (nav - fl[i]) > 0:
-            per_s = f"{math.log((nav - fl[i]) / prev_nav):+.4f}"
-        else:
-            per_s = "—"
-        lines.append(f"| {dd} | {nav:,.0f} | {basket_mv:,.0f} | {active_mv:,.0f} | "
-                      f"{cash:,.0f} | {cash_ratio} | {a_val} | {b_val} | {per_s} |")
-        prev_nav = nav
-    numeric_block = "\n".join(lines) + "\n\n"
-
+        per = "—"
+        if last_i is not None:
+            _, seg = twr_and_log(navs[last_i:i + 1], [0.0] + fl[last_i + 1:i + 1])
+            per = f"{seg:+.4f}"
+        lines.append(f"| {d.date()} | {nav:,.0f} | {basket:,.0f} | {active:,.0f} | "
+                     f"{cash:,.0f} | {(cash / nav if nav else 0):.1%} | {a_val} | {b_val} | {per} |")
+        last_i = i
     OUT.mkdir(exist_ok=True)
-    (OUT / "LEDGER.md").write_text(prefix + numeric_block + suffix, encoding="utf-8")
-    print("寫 out/LEDGER.md（已保留標頭／預設袋／部位／執行回填）；TWR", f"{twr:.2%}", "log", round(lg, 4))
+    (OUT / "LEDGER.md").write_text(prefix + "\n".join(lines) + "\n\n" + suffix, encoding="utf-8")
+    print("寫 out/LEDGER.md；TWR", f"{twr:.2%}", "log", round(lg, 4))
 
 # ---------- milestones ----------
 ROW = re.compile(r"^\|\s*(M-[\w′']+)\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|")
@@ -620,12 +678,16 @@ def cmd_scorecard(a):
     """A 績效 / B 相對績效 / C 部位層與現金拖累 / D Brier。決策層歸因之選券與表達工具欄由 PM 補。"""
     import pandas as pd
     bm = read_csv(OUT / "benchmarks.csv")
+    if date.fromisoformat(cfg()["start_date"]) > date.today():
+        _prestart_exit(cfg()["start_date"], "scorecard")
     if not (OUT / "LEDGER.md").exists() or not bm:
         sys.exit("先跑 ledger 與 benchmark")
     led = [l for l in (OUT / "LEDGER.md").read_text(encoding="utf-8").splitlines() if l.startswith("| 20")]
     navs = [float(l.split("|")[2].replace(",", "")) for l in led]  # 新 9 欄格式：欄2＝池NAV（舊格式為欄4）
     dates = [l.split("|")[1].strip() for l in led]
-    a_nav = [float(r["nav_a"]) for r in bm][:len(navs)]; b_nav = [float(r["nav_b"]) for r in bm][:len(navs)]
+    bmd = {r["date"]: r for r in bm}  # 依日期對齊（不依列序）
+    pairs = [(n, bmd[d]) for n, d in zip(navs, dates) if d in bmd]
+    a_nav = [float(r["nav_a"]) for _, r in pairs]; b_nav = [float(r["nav_b"]) for _, r in pairs]
     def lg(x): return math.log(x[-1] / x[0]) if len(x) > 1 and x[0] > 0 and x[-1] > 0 else float("nan")
     mdd = max((max(navs[:i + 1]) - navs[i]) / max(navs[:i + 1]) for i in range(len(navs))) if navs else 0
     # D: Brier 自 work/M_*.md 已解析列（結果欄 1/0）

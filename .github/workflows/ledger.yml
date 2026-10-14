@@ -17,15 +17,17 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install yfinance pandas requests
+      # 起算前／無資料時三指令皆 exit 0 且不寫檔；只有本輪新產之 out/LEDGER.md 才覆寫正本
       - name: benchmark + ledger + scorecard numbers
         run: |
           python aim.py benchmark
+          rm -f out/LEDGER.md
           python aim.py ledger
-          cp out/LEDGER.md pm/LEDGER.md      # 正本＝pm/LEDGER.md；aim.py 保留標頭／預設袋／部位節
+          if [ -f out/LEDGER.md ]; then cp out/LEDGER.md pm/LEDGER.md; fi   # 正本＝pm/LEDGER.md；aim.py 保留標頭／預設袋／部位節
           python aim.py scorecard || true    # 起算後首個完整月前可能無資料
       - name: commit
         run: |
           git config user.name "aim-actions"; git config user.email "actions@users.noreply.github.com"
-          git add out pm
+          git add -A pm; if [ -d out ]; then git add -A out; fi
           git diff --cached --quiet || git commit -m "MECH: ledger/benchmark $(date -u +%F)"
           git push

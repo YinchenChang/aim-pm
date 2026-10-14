@@ -1,7 +1,7 @@
 <!-- BY: PM@CL | MODEL: Claude Opus 5【自報】 | CHARTER: AIM-C1.1 | NOTE: 定稿自 PM@GK 擬稿 1aKgwxslikOV-2Bk5yUsUlACM6EqDtdd2（使用者 09-16 追認預設袋）；PM@CL 補齊 CHARTER §3 欄位 | CONSUMES: 12K5eqBNP6OMkM_c35ko4hqO8vMDbPuBi；1aKgwxslikOV-2Bk5yUsUlACM6EqDtdd2；17pxTe8XkUvYInPgOf8rKq8d7CAHPiQkd | EMITS: 1uKfYqf1Dr3uyMTI84Sgq0Pw2gU4Ldlmm -->
 # LEDGER — 委託資本帳本
 
-**正本：** `AIM/pm/LEDGER.md` fileId `1uKfYqf1Dr3uyMTI84Sgq0Pw2gU4Ldlmm`（非 PM 之 `sync` 不下載）
+**正本：** repo `YinchenChang/aim-pm` 之 `pm/LEDGER.md`（C1.2 起；舊 Drive fileId `1uKfYqf1Dr3uyMTI84Sgq0Pw2gU4Ldlmm` 為唯讀史料）
 **寫入：** 2026-09-16 PM@CL　**起算日：** 2026-10-15　**地位：** 標頭定稿；數字表空（起算前）
 **規則：** 「標頭」與「預設袋」兩節由 PM 維護；「數字表」節由 `aim.py` 覆寫，覆寫時不得動前兩節。
 
@@ -27,7 +27,7 @@
 - 再平衡與季切同日；主動部位自預設袋按比例撥出（§3.1）。
 - 主動部位：無（起算前）。
 
-## 數字表（`aim.py` 覆寫區；起算前為空）
+## 數字表（`aim.py` 覆寫區）
 
 **起算至今：** 時間加權報酬 —　對數成長率 —　最大回撤 —
 
