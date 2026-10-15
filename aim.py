@@ -447,6 +447,10 @@ def daily_prices(symbols, start, end, adjusted):
         except Exception:  # noqa
             cols[s] = pd.Series(dtype=float)
     px = pd.DataFrame(cols)
+    try:
+        px.index = pd.DatetimeIndex(px.index).tz_localize(None) if len(px.index) else pd.DatetimeIndex([])
+    except TypeError:  # 已為 tz-naive
+        px.index = pd.DatetimeIndex(px.index)
     for r in read_csv(DATA / "marks.csv"):
         if r["symbol"] in px.columns or r["symbol"] in symbols:
             px.loc[pd.Timestamp(r["date"]), r["symbol"]] = float(r["price"])
