@@ -443,7 +443,9 @@ def daily_prices(symbols, start, end, adjusted):
     for s in symbols:
         try:
             h = yf.download(s, start=start, end=end_x, progress=False, auto_adjust=adjusted)["Close"]
-            cols[s] = h.squeeze() if hasattr(h, "squeeze") else h
+            if isinstance(h, pd.DataFrame):  # 新版 yfinance 為 MultiIndex 欄；不用 squeeze（單列時會變純量）
+                h = h[s] if s in h.columns else h.iloc[:, 0]
+            cols[s] = pd.Series(h, dtype=float)
         except Exception:  # noqa
             cols[s] = pd.Series(dtype=float)
     px = pd.DataFrame(cols)
