@@ -20,6 +20,10 @@ jobs:
       # 起算前／無資料時三指令皆 exit 0 且不寫檔；只有本輪新產之 out/LEDGER.md 才覆寫正本
       - name: benchmark + ledger + scorecard numbers
         run: |
+          # 失敗時把輸出尾段寫成 ::error 註記（雲端 session 讀不到 job log，只讀得到 check-run annotations）
+          trap 'if [ $? -ne 0 ]; then echo "::error title=ledger step::$(tail -c 3500 run.log | sed -e "s/%/%25/g" | sed -e ":a;N;\$!ba;s/\n/%0A/g")"; fi' EXIT
+          exec > >(tee run.log) 2>&1
+          set -e
           python aim.py benchmark
           rm -f out/LEDGER.md
           python aim.py ledger
